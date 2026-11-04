@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
 import logging
 
 from homeassistant.components import bluetooth
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.event import async_call_later
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
-from .api import HunterAuthError, HunterConnectionError, HunterNodeBTClient
+from .api import HunterAuthError, HunterConnectionError, HunterNodeBTClient, station_is_active
 from .const import (
     CONF_DEFAULT_RUN_TIME,
     CONF_PIN,
@@ -32,6 +34,14 @@ from .protocol import (
 
 _LOGGER = logging.getLogger(__name__)
 
+# A BLE call through a proxy can hang forever; a hung poll stops the coordinator for good.
+POLL_TIMEOUT = 120  # seconds
+DISCONNECT_TIMEOUT = 10  # seconds
+# While a station runs, poll faster so the valve closes in HA when the run ends.
+ACTIVE_SCAN_INTERVAL = timedelta(minutes=1)
+# Polls through the proxy fail now and then; keep the last data for this many failures in a row.
+MAX_SOFT_FAILURES = 2
+
 type HunterConfigEntry = ConfigEntry[HunterCoordinator]
 
 
@@ -46,6 +56,9 @@ class HunterCoordinator(DataUpdateCoordinator[dict]):
             name=f"{DOMAIN} {entry.title}",
             update_interval=timedelta(minutes=int(scan_interval_min)),
         )
+        self._idle_interval = timedelta(minutes=int(scan_interval_min))
+        self._failures = 0
+        self._unsub_run_end: Callable[[], None] | None = None
         self.entry = entry
         self.address: str = entry.unique_id or entry.data["address"]
         self._pin = int(entry.data.get(CONF_PIN, DEFAULT_PIN))
@@ -104,6 +117,47 @@ class HunterCoordinator(DataUpdateCoordinator[dict]):
         return self._client
 
     async def _async_update_data(self) -> dict:
+        try:
+            async with asyncio.timeout(POLL_TIMEOUT):
+                data = await self._async_poll()
+        except (UpdateFailed, TimeoutError) as err:
+            self._failures += 1
+            if self._full_data.get("State") is not None and self._failures <= MAX_SOFT_FAILURES:
+                _LOGGER.debug("Poll failed (%s), keeping last data (%s in a row)", err or "timeout", self._failures)
+                return self._full_data
+            if isinstance(err, TimeoutError):
+                raise UpdateFailed(f"No reply within {POLL_TIMEOUT} s") from err
+            raise
+        self._failures = 0
+        self._track_running(data)
+        return data
+
+    def _track_running(self, data: dict) -> None:
+        """Poll every minute while a station runs and once more right after it should end."""
+        running = [
+            st for key, st in (data.get("State") or {}).items()
+            if key.startswith("Station_") and isinstance(st, dict) and station_is_active(st.get("State"))
+        ]
+        self.update_interval = ACTIVE_SCAN_INTERVAL if running else self._idle_interval
+        if self._unsub_run_end is not None:
+            self._unsub_run_end()
+            self._unsub_run_end = None
+        remaining = [int(st.get("Remaining") or 0) for st in running if int(st.get("Remaining") or 0) > 0]
+        if remaining and min(remaining) + 10 < ACTIVE_SCAN_INTERVAL.total_seconds():
+            self._unsub_run_end = async_call_later(self.hass, min(remaining) + 10, self._run_end)
+
+    async def async_shutdown(self) -> None:
+        if self._unsub_run_end is not None:
+            self._unsub_run_end()
+            self._unsub_run_end = None
+        await super().async_shutdown()
+
+    @callback
+    def _run_end(self, _now: datetime) -> None:
+        self._unsub_run_end = None
+        self.hass.async_create_task(self.async_request_refresh())
+
+    async def _async_poll(self) -> dict:
         client = self._get_client()
         try:
             if not self.station_count:
@@ -137,16 +191,28 @@ class HunterCoordinator(DataUpdateCoordinator[dict]):
         except HunterConnectionError as err:
             raise UpdateFailed(str(err)) from err
         finally:
-            await client.disconnect()
+            await self._disconnect(client)
+
+    async def _disconnect(self, client: HunterNodeBTClient) -> None:
+        try:
+            async with asyncio.timeout(DISCONNECT_TIMEOUT):
+                await client.disconnect()
+        except TimeoutError:
+            _LOGGER.debug("Disconnect timed out")
 
     async def _async_command(
         self, command: Callable[[HunterNodeBTClient], Awaitable[None]]
     ) -> None:
         client = self._get_client()
         try:
-            await command(client)
+            async with asyncio.timeout(POLL_TIMEOUT):
+                await command(client)
+        except TimeoutError as err:
+            raise HunterConnectionError(f"No reply within {POLL_TIMEOUT} s") from err
         finally:
-            await client.disconnect()
+            await self._disconnect(client)
+        # A short wait so the controller reports the new station state.
+        await asyncio.sleep(2)
         await self.async_request_refresh()
 
     async def async_start_station(self, station: int, run_time_s: int | None = None) -> None:

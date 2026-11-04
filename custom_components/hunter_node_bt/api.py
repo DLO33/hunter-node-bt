@@ -109,16 +109,30 @@ class HunterNodeBTClient:
         await self._client.write_gatt_char(
             PIN_CHAR, xor_ac(pin_info(_LOGIN_REQUEST)), response=False
         )
-        ptype, result, rnd, _ = await asyncio.wait_for(self._pin_q.get(), COMMAND_TIMEOUT)
-        if ptype != _LOGIN_CHALLENGE_REQUEST or result != 0:
+        ptype, result, rnd, _ = await self._wait_pin(_LOGIN_CHALLENGE_REQUEST)
+        if result != 0:
             raise HunterConnectionError(f"Login challenge failed (type={ptype} result={result})")
         resp = pin_info(
             _LOGIN_CHALLENGE_RESPONSE, random_number=rnd, pin=self._pin ^ rnd
         )
         await self._client.write_gatt_char(PIN_CHAR, xor_ac(resp), response=False)
-        ptype, result, _, _ = await asyncio.wait_for(self._pin_q.get(), COMMAND_TIMEOUT)
-        if ptype != _LOGIN_CHALLENGE_RESULT or result != 0:
+        ptype, result, _, _ = await self._wait_pin(_LOGIN_CHALLENGE_RESULT)
+        if result != 0:
             raise HunterAuthError(f"PIN rejected (result={result})")
+
+    async def _wait_pin(self, wanted: int) -> tuple[int, int, int, int]:
+        """Wait for a PIN packet of the wanted type, skipping others (a repeated challenge or a stale packet from an
+        earlier connection made a correct PIN look rejected: 'PIN rejected (result=0)')."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + COMMAND_TIMEOUT
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise asyncio.TimeoutError
+            packet = await asyncio.wait_for(self._pin_q.get(), remaining)
+            if packet[0] == wanted:
+                return packet
+            _LOGGER.debug("Ignoring PIN packet type %s while waiting for %s", packet[0], wanted)
 
     async def disconnect(self) -> None:
         client, self._client = self._client, None
