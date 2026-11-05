@@ -102,8 +102,19 @@ class HunterSeasonAdjustNumber(HunterBaseNumber):
 
     @property
     def native_value(self) -> int | None:
-        """Return the global seasonal adjustment %."""
-        return self.coordinator.controller.get("SeasonAdjust")
+        """Return the % in force: this month's table entry while the monthly table is on.
+
+        The global value is ignored by the controller while the monthly table is on,
+        so showing it (e.g. 100 % when November waters at 10 %) was misleading.
+        """
+        return self.coordinator.season_adjust_active
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        return {
+            "global_season_adjust": self.coordinator.controller.get("SeasonAdjust"),
+            "by_month": bool(self.coordinator.controller.get("SeasonAdjustByMonthEnable")),
+        }
 
     async def async_set_native_value(self, value: float) -> None:
         """Set the global seasonal adjustment %."""
