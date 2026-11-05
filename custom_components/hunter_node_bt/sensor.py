@@ -155,10 +155,16 @@ class HunterNextWaterTimeSensor(HunterBaseSensor):
         """Return the next watering start.
 
         The controller only reports the start as minutes after midnight, so the
-        date is the next occurrence of that time of day.
+        date is the next occurrence of that time of day, after the rain delay
+        ends when one is active. None while the controller is off.
         """
+        if self.coordinator.controller.get("ControllerOff"):
+            return None
         state = self.coordinator.data.get("State", {})
-        return next_water_time(state.get("NextWaterTime"), dt_util.now())
+        after = dt_util.now()
+        if (until := self.coordinator.rain_delay_until) is not None and until > after:
+            after = until
+        return next_water_time(state.get("NextWaterTime"), after)
 
 
 class HunterStationRemainingSensor(HunterBaseSensor):
