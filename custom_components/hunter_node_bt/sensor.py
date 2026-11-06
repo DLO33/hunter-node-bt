@@ -12,7 +12,7 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import PERCENTAGE, UnitOfTime
+from homeassistant.const import PERCENTAGE, EntityCategory, UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -22,6 +22,7 @@ from homeassistant.util import dt as dt_util
 from .const import CONTROLLER_STATES, DOMAIN
 from .coordinator import HunterConfigEntry, HunterCoordinator
 from .protocol import from_controller_time, next_water_time
+from .schedule import PROGRAM_LETTERS, format_start_time
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -41,7 +42,14 @@ async def async_setup_entry(
         HunterRainDelayUntilSensor(coordinator),
         HunterLastRunSensor(coordinator),
         HunterActiveSeasonAdjustSensor(coordinator),
+        HunterControllerDateSensor(
+            coordinator, "BatteryChangeDate", "battery_changed", "Battery Changed", "mdi:battery-sync"
+        ),
+        HunterControllerDateSensor(
+            coordinator, "SettingsChangeDate", "settings_changed", "Settings Changed", "mdi:cog-sync"
+        ),
     ]
+    entities.extend(HunterProgramScheduleSensor(coordinator, letter) for letter in PROGRAM_LETTERS)
 
     # MoistureSensor reads 100 with no probe attached, so only trust the setting
     ctrl_data = coordinator.data.get("Controller", {})
@@ -269,3 +277,63 @@ class HunterActiveSeasonAdjustSensor(HunterBaseSensor):
         """Return where the value comes from."""
         by_month = bool(self.coordinator.controller.get("SeasonAdjustByMonthEnable"))
         return {"source": "monthly" if by_month else "global"}
+
+
+class HunterProgramScheduleSensor(HunterBaseSensor):
+    """Summary of a program, e.g. 'Every day at 06:30 (10 min)', with the details as attributes."""
+
+    _attr_icon = "mdi:calendar-sync"
+
+    def __init__(self, coordinator: HunterCoordinator, letter: str) -> None:
+        super().__init__(coordinator)
+        self.letter = letter
+        self._attr_unique_id = f"{coordinator.address}_program_{letter.lower()}_schedule"
+        self._attr_name = f"Program {letter} Schedule"
+
+    @property
+    def available(self) -> bool:
+        """Only available once the controller has reported this program."""
+        return super().available and self.letter in self.coordinator.programs
+
+    @property
+    def native_value(self) -> str:
+        """Return the one-line summary ('Off' when the program never waters)."""
+        return self.coordinator.program(self.letter).summary()
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return start times (HH:MM), water days and run minutes per station."""
+        program = self.coordinator.program(self.letter)
+        return {
+            "program_name": program.name,
+            "active": program.is_active,
+            "start_times": [format_start_time(minutes) for minutes in program.start_times],
+            "water_days": program.water_days_text,
+            "run_minutes": {
+                station: round(seconds / 60, 1) for station, seconds in program.run_times.items()
+            },
+            "total_minutes_per_start": round(program.run_seconds_per_start / 60, 1),
+        }
+
+
+class HunterControllerDateSensor(HunterBaseSensor):
+    """A date the controller records, such as when the battery was last changed."""
+
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(
+        self, coordinator: HunterCoordinator, field: str, key: str, name: str, icon: str
+    ) -> None:
+        super().__init__(coordinator)
+        self.field = field
+        self._attr_unique_id = f"{coordinator.address}_{key}"
+        self._attr_name = name
+        self._attr_icon = icon
+
+    @property
+    def native_value(self) -> datetime | None:
+        """Return the recorded date (None when the controller has none)."""
+        return from_controller_time(
+            self.coordinator.controller.get(self.field), dt_util.get_default_time_zone()
+        )

@@ -219,6 +219,26 @@ returned `{"Status":0}` and `ControllerState` went `0 → 3`; writing `0` return
 `{"Status":0}`, `ControllerState` went back to `0` and `ProgrammableDaysOff`
 read back as `0`. `Sensor.ProgrammableOffRestore` stayed `0` throughout.
 
+### Programs, stations and settings (verified on a 2-station controller, firmware 2.2A, 2026-10-26)
+
+- A program write must carry the whole section:
+  `{"Program_A":{<every field from Read All, with changes>}}` → `{"Status":0}`.
+  `StartTimes` keeps its slot count (8 on this firmware) with `65535` in unused
+  slots; `RunTime` is seconds per station, `0` = station not in the program.
+- `ScheduleDays` is a bitmask with bit 0 = Sunday … bit 6 = Saturday (`127` =
+  every day). `ScheduleType` `0` uses `ScheduleDays`; `1`, `2` and `3` follow
+  the app's odd days / even days / interval options, with `IntervalDayCount` for
+  the interval.
+- `{"Station_1":{"Name":…,"Cycle":…,"Soak":…}}` → `{"Status":0}`. `Cycle` and
+  `Soak` are seconds (`0` = off). Writing the whole section keeps the fields
+  that aren't being changed.
+- `StationDelay` and `ClickDelaySeconds` (rain sensor delay) are seconds.
+  `BatteryChangeDate` and `SettingsChangeDate` are local-epoch timestamps;
+  writing `BatteryChangeDate` records a battery change as the app does.
+- Boolean settings (`ClickSensorEnabled`, `SensorBypassEnabled`,
+  `SoilSensorEnabled`, `PmvEnabled`, `SolarPanelAttached`) take `true`/`false`
+  and read back as written.
+
 ### Controller off and seasonal adjustment (verified 2026-10-25)
 
 - `{"Controller":{"ControllerOff":true}}` → `{"Status":0}`, `ControllerState`

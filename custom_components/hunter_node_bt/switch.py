@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import logging
 from typing import Any
 
@@ -25,12 +26,59 @@ async def async_setup_entry(
 ) -> None:
     """Set up Hunter NODE-BT switch entities."""
     coordinator = entry.runtime_data
-    async_add_entities(
-        [
-            HunterControllerSwitch(coordinator),
-            HunterMonthlySeasonAdjustSwitch(coordinator),
-        ]
+    entities: list[SwitchEntity] = [
+        HunterControllerSwitch(coordinator),
+        HunterMonthlySeasonAdjustSwitch(coordinator),
+    ]
+    entities.extend(
+        HunterControllerSettingSwitch(coordinator, setting)
+        for setting in CONTROLLER_SETTING_SWITCHES
     )
+    async_add_entities(entities)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ControllerSettingSwitchDescription:
+    """An on/off Controller field."""
+
+    key: str
+    field: str
+    name: str
+    icon: str
+
+
+CONTROLLER_SETTING_SWITCHES: tuple[ControllerSettingSwitchDescription, ...] = (
+    ControllerSettingSwitchDescription(
+        key="rain_sensor_enabled",
+        field="ClickSensorEnabled",
+        name="Rain Sensor Enabled",
+        icon="mdi:weather-pouring",
+    ),
+    ControllerSettingSwitchDescription(
+        key="sensor_bypass",
+        field="SensorBypassEnabled",
+        name="Sensor Bypass",
+        icon="mdi:debug-step-over",
+    ),
+    ControllerSettingSwitchDescription(
+        key="soil_sensor_enabled",
+        field="SoilSensorEnabled",
+        name="Soil Sensor Enabled",
+        icon="mdi:sprout",
+    ),
+    ControllerSettingSwitchDescription(
+        key="master_valve",
+        field="PmvEnabled",
+        name="Master Valve / Pump",
+        icon="mdi:pump",
+    ),
+    ControllerSettingSwitchDescription(
+        key="solar_panel",
+        field="SolarPanelAttached",
+        name="Solar Panel Attached",
+        icon="mdi:solar-panel",
+    ),
+)
 
 
 class HunterBaseSwitch(CoordinatorEntity[HunterCoordinator], SwitchEntity):
@@ -109,3 +157,42 @@ class HunterMonthlySeasonAdjustSwitch(HunterBaseSwitch):
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Use the global seasonal adjustment instead."""
         await self.coordinator.async_set_season_adjust_by_month(False)
+
+
+class HunterControllerSettingSwitch(HunterBaseSwitch):
+    """An on/off Controller setting described by a ControllerSettingSwitchDescription."""
+
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(
+        self, coordinator: HunterCoordinator, setting: ControllerSettingSwitchDescription
+    ) -> None:
+        super().__init__(coordinator)
+        self.setting = setting
+        self._attr_unique_id = f"{coordinator.address}_{setting.key}"
+        self._attr_name = setting.name
+        self._attr_icon = setting.icon
+
+    @property
+    def available(self) -> bool:
+        """Only available when this firmware reports the field."""
+        return super().available and self.setting.field in self.coordinator.controller
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return the setting as the controller last reported it."""
+        value = self.coordinator.controller.get(self.setting.field)
+        return None if value is None else bool(value)
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Turn the setting on."""
+        await self._async_write(True)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Turn the setting off."""
+        await self._async_write(False)
+
+    async def _async_write(self, value: bool) -> None:
+        await self.coordinator.async_set_controller_settings(
+            {self.setting.field: value}, f"set {self.setting.name.lower()}"
+        )

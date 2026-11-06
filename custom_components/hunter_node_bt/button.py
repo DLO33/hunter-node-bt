@@ -10,9 +10,11 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 from .coordinator import HunterConfigEntry, HunterCoordinator
+from .protocol import to_controller_time
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -33,6 +35,8 @@ async def async_setup_entry(
         HunterRunTestButton(coordinator),
         HunterCancelRainDelayButton(coordinator),
         HunterSyncClockButton(coordinator),
+        HunterBatteryReplacedButton(coordinator),
+        HunterRefreshButton(coordinator),
     ]
 
     async_add_entities(entities)
@@ -143,3 +147,38 @@ class HunterSyncClockButton(HunterBaseButton):
     async def async_press(self) -> None:
         """Handle button press."""
         await self.coordinator.async_sync_clock()
+
+
+class HunterBatteryReplacedButton(HunterBaseButton):
+    """Button to record today as the date the 9 V battery was changed."""
+
+    _attr_icon = "mdi:battery-sync"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, coordinator: HunterCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.address}_battery_replaced"
+        self._attr_name = "Battery Replaced"
+
+    async def async_press(self) -> None:
+        """Handle button press."""
+        await self.coordinator.async_set_controller_settings(
+            {"BatteryChangeDate": to_controller_time(dt_util.now())},
+            "set battery change date",
+        )
+
+
+class HunterRefreshButton(HunterBaseButton):
+    """Button to re-read programs, stations and settings, e.g. after using the phone app."""
+
+    _attr_icon = "mdi:refresh"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, coordinator: HunterCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.address}_refresh"
+        self._attr_name = "Refresh"
+
+    async def async_press(self) -> None:
+        """Handle button press."""
+        await self.coordinator.async_full_refresh()

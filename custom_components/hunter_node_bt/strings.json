@@ -82,6 +82,36 @@
           "description": "How long to water (up to 4 hours)."
         }
       }
+    },
+    "set_program": {
+      "name": "Set program",
+      "description": "Change a program's start times, water days or a station's run time. Anything left out stays as it is.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Controller",
+          "description": "Only needed when more than one controller is set up."
+        },
+        "program": {
+          "name": "Program",
+          "description": "Program A, B or C."
+        },
+        "start_times": {
+          "name": "Start times",
+          "description": "24-hour start times such as 06:30. An empty list turns the program's starts off."
+        },
+        "water_days": {
+          "name": "Water days",
+          "description": "'every day', 'odd days', 'even days', 'every 3 days' or day names such as 'Mon, Wed, Fri'."
+        },
+        "station": {
+          "name": "Station",
+          "description": "Station whose run time to change."
+        },
+        "run_minutes": {
+          "name": "Run time",
+          "description": "Minutes the station waters on each start (0 removes it from the program)."
+        }
+      }
     }
   }
 }

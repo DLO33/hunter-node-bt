@@ -273,6 +273,16 @@ class HunterNodeBTClient:
             {"SeasonAdjustByMonthEnable": enabled}, "set monthly season adjust"
         )
 
+    async def set_program(self, letter: str, program: dict) -> None:
+        """Write a whole Program_X section (A, B or C)."""
+        reply = await self._send({f"Program_{letter}": program})
+        self._check_status(reply, f"write program {letter}")
+
+    async def set_station(self, station: int, settings: dict) -> None:
+        """Write a Station_N section (Name, Cycle and Soak)."""
+        reply = await self._send({f"Station_{station}": settings})
+        self._check_status(reply, f"write station {station}")
+
 
 def station_is_active(state_value: int | None) -> bool:
     """True if a StationState.State means water is flowing."""

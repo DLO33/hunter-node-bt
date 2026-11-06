@@ -50,6 +50,36 @@
           "description": "Tempo de rega (até 4 horas)."
         }
       }
+    },
+    "set_program": {
+      "name": "Definir programa",
+      "description": "Altera as horas de início, os dias de rega ou o tempo de rega de uma estação num programa. O que não for indicado mantém-se.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Controlador",
+          "description": "Só é necessário com mais do que um controlador configurado."
+        },
+        "program": {
+          "name": "Programa",
+          "description": "Programa A, B ou C."
+        },
+        "start_times": {
+          "name": "Horas de início",
+          "description": "Horas no formato 24 horas, por exemplo 06:30. Uma lista vazia desliga os inícios do programa."
+        },
+        "water_days": {
+          "name": "Dias de rega",
+          "description": "'every day', 'odd days', 'even days', 'every 3 days' ou dias como 'Mon, Wed, Fri'."
+        },
+        "station": {
+          "name": "Estação",
+          "description": "Estação cujo tempo de rega se altera."
+        },
+        "run_minutes": {
+          "name": "Tempo de rega",
+          "description": "Minutos de rega da estação em cada início (0 retira-a do programa)."
+        }
+      }
     }
   }
 }

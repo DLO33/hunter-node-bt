@@ -31,6 +31,7 @@ from .protocol import (
     rain_delay_end,
     to_controller_time,
 )
+from .schedule import Program, WaterDays, build_program_payload, parse_program
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -41,6 +42,9 @@ DISCONNECT_TIMEOUT = 10  # seconds
 ACTIVE_SCAN_INTERVAL = timedelta(minutes=1)
 # Polls through the proxy fail now and then; keep the last data for this many failures in a row.
 MAX_SOFT_FAILURES = 2
+# Programs, station names and settings can be changed from the phone app, so
+# re-read everything now and then rather than only at startup.
+FULL_READ_INTERVAL = timedelta(hours=1)
 
 type HunterConfigEntry = ConfigEntry[HunterCoordinator]
 
@@ -70,6 +74,8 @@ class HunterCoordinator(DataUpdateCoordinator[dict]):
         # Per-station manual run time (seconds), set by the station Run Time numbers.
         self.station_run_times: dict[int, int] = {}
         self._full_data: dict = {}
+        self._last_full_read: datetime | None = None
+        self._full_read_requested = False
 
     @property
     def default_run_time_s(self) -> int:
@@ -107,6 +113,10 @@ class HunterCoordinator(DataUpdateCoordinator[dict]):
             self.controller.get("ProgrammableDaysOff"),
             dt_util.get_default_time_zone(),
         )
+
+    def program(self, letter: str) -> Program:
+        """Decoded program A, B or C (empty when the controller didn't report it)."""
+        return parse_program(letter, self.programs.get(letter))
 
     def _get_client(self) -> HunterNodeBTClient:
         device = bluetooth.async_ble_device_from_address(self.hass, self.address, connectable=True)
@@ -160,20 +170,8 @@ class HunterCoordinator(DataUpdateCoordinator[dict]):
     async def _async_poll(self) -> dict:
         client = self._get_client()
         try:
-            if not self.station_count:
-                full = await client.read_all()
-                self._full_data = full
-                self.station_count = int((full.get("Controller") or {}).get("StationCount") or 0)
-
-                for i in range(1, 5):
-                    st_key = f"Station_{i}"
-                    if st_key in full:
-                        self.stations[i] = full[st_key]
-
-                for p_letter in ("A", "B", "C", "T"):
-                    p_key = f"Program_{p_letter}"
-                    if p_key in full:
-                        self.programs[p_letter] = full[p_key]
+            if self._full_read_due():
+                self._apply_full_read(await client.read_all())
             else:
                 # Controller and Sensor are not static: battery, rain delay and
                 # settings changed from the phone app all live there.
@@ -192,6 +190,40 @@ class HunterCoordinator(DataUpdateCoordinator[dict]):
             raise UpdateFailed(str(err)) from err
         finally:
             await self._disconnect(client)
+
+    def _full_read_due(self) -> bool:
+        """True on first poll, when asked for, and once every FULL_READ_INTERVAL."""
+        if not self.station_count or self._full_read_requested:
+            return True
+        return (
+            self._last_full_read is None
+            or dt_util.utcnow() - self._last_full_read >= FULL_READ_INTERVAL
+        )
+
+    def _apply_full_read(self, full: dict) -> None:
+        """Cache the station layout and programs from a Read All reply."""
+        self._full_data = full
+        self._last_full_read = dt_util.utcnow()
+        self._full_read_requested = False
+        self.station_count = int((full.get("Controller") or {}).get("StationCount") or 0)
+
+        for i in range(1, 5):
+            st_key = f"Station_{i}"
+            if st_key in full:
+                self.stations[i] = full[st_key]
+
+        for p_letter in ("A", "B", "C", "T"):
+            p_key = f"Program_{p_letter}"
+            if p_key in full:
+                self.programs[p_letter] = full[p_key]
+
+    async def async_full_refresh(self) -> None:
+        """Re-read programs, stations and settings now (e.g. after using the phone app).
+
+        Not debounced: a press right after a command would otherwise be dropped.
+        """
+        self._full_read_requested = True
+        await self.async_refresh()
 
     async def _disconnect(self, client: HunterNodeBTClient) -> None:
         try:
@@ -262,6 +294,48 @@ class HunterCoordinator(DataUpdateCoordinator[dict]):
             lambda client: client.set_season_adjust_by_month(enabled),
             {"SeasonAdjustByMonthEnable": enabled},
         )
+
+    async def async_set_controller_settings(self, settings: dict, operation: str) -> None:
+        """Write one or more Controller settings (sensors, delays, master valve...)."""
+        await self._async_set_controller(
+            lambda client: client.set_controller(settings, operation), settings
+        )
+
+    async def async_set_program(
+        self,
+        letter: str,
+        *,
+        start_times: list[int] | None = None,
+        water_days: WaterDays | None = None,
+        run_times: dict[int, int] | None = None,
+    ) -> None:
+        """Change part of program A, B or C, keeping everything else as it is.
+
+        Raises ValueError for changes the controller can't take (too many start
+        times, unknown station...), before anything is sent.
+        """
+        if letter not in self.programs:
+            raise ValueError(f"Program {letter} was not reported by the controller")
+        payload = build_program_payload(
+            self.programs[letter],
+            start_times=start_times,
+            water_days=water_days,
+            run_times=run_times,
+            station_count=self.station_count,
+        )
+        _LOGGER.debug("Writing Program_%s: %s", letter, payload)
+        await self._async_command(lambda client: client.set_program(letter, payload))
+        self.programs[letter] = payload
+        self.async_update_listeners()
+
+    async def async_set_station(self, station: int, changes: dict) -> None:
+        """Change a station's Name, Cycle or Soak, keeping the other fields."""
+        if station not in self.stations:
+            raise ValueError(f"Station {station} was not reported by the controller")
+        settings = {**self.stations[station], **changes}
+        await self._async_command(lambda client: client.set_station(station, settings))
+        self.stations[station] = settings
+        self.async_update_listeners()
 
     async def async_sync_clock(self) -> None:
         """Set the controller clock to Home Assistant's local time."""

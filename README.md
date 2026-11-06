@@ -35,6 +35,25 @@ Reverse-engineered directly from the official Hunter NODE-BT app (`com.hunter.no
     data:
       duration: "00:15:00"
     ```
+- **Programs (A, B, C)**: read and edit the controller's schedules from Home Assistant.
+  - `sensor` Program X Schedule: a one-line summary such as `Every day at 06:30 (10 min)`, with `start_times`, `water_days` and `run_minutes` attributes.
+  - `text` Program X Start Times: 24-hour times such as `06:30, 16:00`, or `off`.
+  - `text` Program X Water Days: `every day`, `odd days`, `even days`, `every 3 days`, or days such as `Mon, Wed, Fri`.
+  - `number` Program X Station N Run Time (minutes per start; `0` takes the station out of the program).
+  - Programs B and C start disabled; enable their entities if you use them.
+  - Service `hunter_node_bt.set_program` changes any of these in one call, leaving the rest as it is:
+    ```yaml
+    action: hunter_node_bt.set_program
+    data:
+      program: A
+      start_times: ["06:30", "16:00"]
+      water_days: "Mon, Wed, Fri"
+      station: 1
+      run_minutes: 15
+    ```
+  - Programs, station names and settings are re-read every hour, so changes made in the phone app show up; the **Refresh** button re-reads them straight away.
+- **Station Settings**: `text` Station N Name (the name shown in the phone app) and `number` Station N Cycle / Soak (minutes, `0` = off).
+- **Controller Settings** (configuration entities): Rain Sensor Enabled, Rain Sensor Delay (hours), Sensor Bypass, Soil Sensor Enabled, Soil Sensor Trigger Level, Master Valve / Pump, Solar Panel Attached and Delay Between Stations.
 - **Sensors**:
   - Controller Battery level (`%`).
   - Soil moisture level (`%`).
@@ -43,6 +62,7 @@ Reverse-engineered directly from the official Hunter NODE-BT app (`com.hunter.no
   - Last run (start time, station, run time).
   - Rain delay end time.
   - Remaining run time per station (seconds).
+  - Battery Changed and Settings Changed dates (diagnostic).
 - **Binary Sensors**:
   - Rain sensor active / Clik sensor detection.
   - Rain delay active status.
@@ -52,6 +72,8 @@ Reverse-engineered directly from the official Hunter NODE-BT app (`com.hunter.no
   - **Test All Stations**: Runs a quick test sequence across all stations.
   - **Cancel Rain Delay**: Resumes scheduled watering.
   - **Sync Clock**: Sets the controller clock to Home Assistant's local time (the controller does not follow DST on its own).
+  - **Battery Replaced**: Records today as the battery change date on the controller.
+  - **Refresh**: Re-reads programs, station names and settings from the controller.
 - **Options Flow**: Easily change the default manual run time (in minutes) via the integration settings without re-pairing.
 
 ---
